@@ -1,3 +1,14 @@
+import { Wallet as EthWallet } from 'https://esm.sh/ethers@6.15.0';
+import { Keypair } from 'https://esm.sh/@solana/web3.js@1.98.4';
+import { mnemonicNew, mnemonicToWalletKey } from 'https://esm.sh/@ton/crypto@3.3.0';
+import { WalletContractV4 } from 'https://esm.sh/@ton/ton@15.3.1';
+
+const VAULT_KEY = 'genpay.encryptedVault.v1';
+const SESSION_KEY = 'genpay.sessionWallet.v1';
+const BALANCES_KEY = 'genpay.demoBalances.v1';
+
+const lucideIcons = {
+  AlertTriangle: '<svg data-lucide="AlertTriangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
 const chains = [
   {
     name: 'Solana',
@@ -53,6 +64,300 @@ function icon(name) {
   return lucideIcons[name];
 }
 
+function readJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
+function saveJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function bytesToBase64(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+}
+
+function base64ToBytes(value) {
+  return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+}
+
+async function randomMnemonic() {
+  return (await mnemonicNew(24)).join(' ');
+}
+
+async function digestBytes(value) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveKey(password, salt) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 210_000 },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+async function encryptVault(seedPhrase, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(password, salt);
+  const cipherText = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(seedPhrase));
+  return { salt: bytesToBase64(salt), iv: bytesToBase64(iv), cipherText: bytesToBase64(cipherText), version: 1 };
+}
+
+async function decryptVault(password) {
+  const vault = readJson(VAULT_KEY);
+  if (!vault) {
+    throw new Error('No Genpay vault exists yet. Create a wallet first.');
+  }
+  const salt = base64ToBytes(vault.salt);
+  const iv = base64ToBytes(vault.iv);
+  const key = await deriveKey(password, salt);
+  const plainText = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, base64ToBytes(vault.cipherText));
+  return new TextDecoder().decode(plainText);
+}
+
+async function createAccounts(seedPhrase) {
+  const ethSeed = await digestBytes(`${seedPhrase}:ethereum`);
+  const solanaSeed = await digestBytes(`${seedPhrase}:solana`);
+  const eth = new EthWallet(`0x${bytesToHex(ethSeed)}`);
+  const solana = Keypair.fromSeed(solanaSeed);
+  const tonKey = await mnemonicToWalletKey(seedPhrase.split(' '));
+  const tonWallet = WalletContractV4.create({ workchain: 0, publicKey: tonKey.publicKey });
+
+  return {
+    createdAt: new Date().toISOString(),
+    seedPhrase,
+    chains: {
+      Solana: { address: solana.publicKey.toBase58(), publicKey: solana.publicKey.toBase58() },
+      Ethereum: { address: eth.address, publicKey: eth.signingKey.publicKey },
+      Ton: { address: tonWallet.address.toString({ testOnly: true }), publicKey: bytesToBase64(tonKey.publicKey) },
+    },
+    pendingTransactions: [],
+  };
+}
+
+function publicSession(wallet) {
+  const { seedPhrase, ...publicWallet } = wallet;
+  return publicWallet;
+}
+
+async function createWallet(event) {
+  event.preventDefault();
+  const password = new FormData(event.currentTarget).get('password').toString();
+  if (password.length < 8) {
+    setNotice('Use at least 8 characters for the local vault password.');
+    return;
+  }
+  const seedPhrase = await randomMnemonic();
+  state.wallet = await createAccounts(seedPhrase);
+  saveJson(VAULT_KEY, await encryptVault(seedPhrase, password));
+  saveJson(SESSION_KEY, publicSession(state.wallet));
+  setNotice('Wallet created. Save your recovery phrase before sending funds.');
+  render();
+}
+
+async function unlockWallet(event) {
+  event.preventDefault();
+  const password = new FormData(event.currentTarget).get('password').toString();
+  try {
+    const seedPhrase = await decryptVault(password);
+    state.wallet = await createAccounts(seedPhrase);
+    saveJson(SESSION_KEY, publicSession(state.wallet));
+    setNotice('Vault unlocked locally. Private material stayed in this browser.');
+    render();
+  } catch {
+    setNotice('Could not unlock the vault. Check your password and try again.');
+  }
+}
+
+function setNotice(message) {
+  state.notice = message;
+}
+
+function lockWallet() {
+  sessionStorage.clear();
+  localStorage.removeItem(SESSION_KEY);
+  state.wallet = null;
+  setNotice('Wallet locked. Encrypted vault remains on this device.');
+  render();
+}
+
+function copyAddress() {
+  navigator.clipboard.writeText(activeAccount().address);
+  setNotice(`${state.activeChain} address copied.`);
+  render();
+}
+
+function activeAccount() {
+  return state.wallet.chains[state.activeChain];
+}
+
+function submitTransaction(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const amount = Number(data.get('amount'));
+  const to = data.get('recipient').toString().trim();
+  if (!to || !Number.isFinite(amount) || amount <= 0) {
+    setNotice('Enter a recipient and a positive amount.');
+    render();
+    return;
+  }
+  if (amount > state.balances[state.activeChain]) {
+    setNotice('Demo balance is too low for this unsigned transaction.');
+    render();
+    return;
+  }
+  state.balances[state.activeChain] = Number((state.balances[state.activeChain] - amount).toFixed(6));
+  const transaction = {
+    id: crypto.randomUUID(),
+    chain: state.activeChain,
+    to,
+    amount,
+    ticker: chainMeta[state.activeChain].ticker,
+    status: 'Locally prepared',
+    createdAt: new Date().toLocaleString(),
+  };
+  state.wallet.pendingTransactions.unshift(transaction);
+  saveJson(BALANCES_KEY, state.balances);
+  saveJson(SESSION_KEY, publicSession(state.wallet));
+  setNotice('Transaction prepared locally. Broadcast integration is the next backend step.');
+  render();
+}
+
+function walletScreen() {
+  const account = activeAccount();
+  const meta = chainMeta[state.activeChain];
+  const total = Object.entries(state.balances).map(([chain, balance]) => `${balance} ${chainMeta[chain].ticker}`).join(' · ');
+  return `
+    <section class="hero-grid compact">
+      <div class="hero-copy">
+        <p class="eyebrow">${icon('ShieldCheck')}Non-custodial vault unlocked</p>
+        <h1>Control ${state.activeChain} from your Genpay vault.</h1>
+        <p class="hero-text">Your encrypted recovery phrase is stored locally with AES-GCM and unlocked with your password. Generated account addresses are ready for testnet send and receive flows.</p>
+        <div class="hero-actions">
+          <button class="primary-button large" id="copy-address" type="button">${icon('Copy')}Copy address</button>
+          <button class="ghost-button large" id="lock-wallet" type="button">${icon('LockKeyhole')}Lock wallet</button>
+        </div>
+      </div>
+      <aside class="wallet-card" aria-label="Genpay wallet overview">
+        <div class="wallet-card-header">
+          <div><p>Total demo balances</p><h2>${state.showBalances ? total : '••••••'}</h2></div>
+          <button class="icon-button" id="toggle-balances" type="button" aria-label="${state.showBalances ? 'Hide balances' : 'Show balances'}">${icon(state.showBalances ? 'EyeOff' : 'Eye')}</button>
+        </div>
+        <p class="address-label">${state.activeChain} ${meta.network}</p>
+        <code>${account.address}</code>
+      </aside>
+    </section>
+
+    <section class="workspace-grid">
+      <div class="chain-panel">
+        <p class="eyebrow">${icon('Coins')}Chains</p>
+        <div class="chain-grid interactive">
+          ${Object.keys(chainMeta).map((chain) => `
+            <button class="chain-card ${chain === state.activeChain ? 'selected' : ''}" data-chain="${chain}" style="--accent: ${chainMeta[chain].accent}" type="button">
+              <div class="chain-icon" aria-hidden="true">${icon('Sparkles')}</div>
+              <h3>${chain}</h3>
+              <p>${chainMeta[chain].network} · ${chainMeta[chain].unit}</p>
+              <strong>${state.showBalances ? `${state.balances[chain]} ${chainMeta[chain].ticker}` : '••••••'}</strong>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      <form class="transaction-card" id="send-form">
+        <p class="eyebrow">${icon('ArrowUpRight')}Send</p>
+        <label>Recipient address<input name="recipient" placeholder="Paste ${state.activeChain} address" autocomplete="off" /></label>
+        <label>Amount (${meta.ticker})<input name="amount" type="number" min="0" step="0.000001" placeholder="0.00" /></label>
+        <button class="primary-button large" type="submit">Prepare transaction</button>
+      </form>
+
+      <div class="transaction-card receive-card">
+        <p class="eyebrow">${icon('QrCode')}Receive</p>
+        <div class="qr-box">${icon('QrCode')}</div>
+        <code>${account.address}</code>
+        <p>Use this ${state.activeChain} ${meta.network} address for incoming test funds.</p>
+      </div>
+    </section>
+
+    <section class="security-strip" aria-label="Security principles">
+      <div>${icon('LockKeyhole')}<span>Encrypted local vault</span></div>
+      <div>${icon('BadgeCheck')}<span>User signs every transaction</span></div>
+      <div>${icon('Zap')}<span>Broadcast adapters next</span></div>
+    </section>
+
+    <section class="activity-card">
+      <h2>Local activity</h2>
+      ${state.wallet.pendingTransactions.length ? state.wallet.pendingTransactions.map((tx) => `
+        <article><span>${tx.status}</span><strong>${tx.amount} ${tx.ticker}</strong><p>${tx.chain} → ${tx.to}</p><small>${tx.createdAt}</small></article>
+      `).join('') : '<p>No prepared transactions yet.</p>'}
+    </section>
+  `;
+}
+
+function onboardingScreen() {
+  const hasVault = Boolean(localStorage.getItem(VAULT_KEY));
+  return `
+    <section class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">${icon('ShieldCheck')}Non-custodial crypto wallet</p>
+        <h1>Your keys. Your chains. Your Genpay.</h1>
+        <p class="hero-text">Create an encrypted browser vault, generate accounts for Solana, Ethereum, and Ton, and prepare wallet transactions without handing custody to Genpay.</p>
+        <div class="warning-card">${icon('AlertTriangle')}This is a client prototype for testnet development. Do not deposit mainnet funds yet.</div>
+      </div>
+      <aside class="wallet-card form-card" aria-label="Create or unlock Genpay wallet">
+        <form id="create-form">
+          <p class="eyebrow">${icon('Fingerprint')}Create vault</p>
+          <label>New password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" /></label>
+          <button class="primary-button large" type="submit">Create wallet</button>
+        </form>
+        <form id="unlock-form" class="unlock-form">
+          <p class="eyebrow">${icon('KeyRound')}Unlock existing</p>
+          <label>Vault password<input name="password" type="password" autocomplete="current-password" placeholder="Password" ${hasVault ? '' : 'disabled'} /></label>
+          <button class="ghost-button large" type="submit" ${hasVault ? '' : 'disabled'}>Unlock wallet</button>
+        </form>
+      </aside>
+    </section>
+  `;
+}
+
+function render() {
+  document.querySelector('#app').innerHTML = `
+    <main class="app-shell">
+      <nav class="topbar" aria-label="Primary navigation">
+        <div class="brand-mark">${icon('Wallet')}<span>Genpay</span></div>
+        <div class="nav-actions"><span>${icon('Network')}Solana · Ethereum · Ton</span></div>
+      </nav>
+      ${state.notice ? `<div class="notice">${state.notice}</div>` : ''}
+      ${state.wallet ? walletScreen() : onboardingScreen()}
+    </main>
+  `;
+
+  document.querySelector('#create-form')?.addEventListener('submit', createWallet);
+  document.querySelector('#unlock-form')?.addEventListener('submit', unlockWallet);
+  document.querySelector('#lock-wallet')?.addEventListener('click', lockWallet);
+  document.querySelector('#copy-address')?.addEventListener('click', copyAddress);
+  document.querySelector('#send-form')?.addEventListener('submit', submitTransaction);
+  document.querySelector('#toggle-balances')?.addEventListener('click', () => {
+    state.showBalances = !state.showBalances;
+    render();
+  });
+  document.querySelectorAll('[data-chain]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.activeChain = button.dataset.chain;
+      render();
+    });
+  });
 function render() {
   const total = showBalances ? '$16,962.22' : '••••••';
   document.querySelector('#app').innerHTML = `
