@@ -6,7 +6,6 @@ Genpay is a basic non-custodial crypto wallet starter focused on three launch ch
 - Solana
 - Ethereum
 - Ton
-
 The app runs fully in the browser. It creates a local encrypted vault, generates chain accounts, lets users unlock or lock the wallet, copy receive addresses, switch chains, and prepare unsigned demo transactions. Private recovery material is encrypted with Web Crypto AES-GCM and stored on the user's device only.
 
 > Warning: this is a testnet-oriented prototype. Do not deposit mainnet funds until production signing, recovery, audits, and broadcast flows are complete.
