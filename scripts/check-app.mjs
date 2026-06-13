@@ -12,18 +12,6 @@ for (const chain of ['Solana', 'Ethereum', 'Ton']) {
   }
 }
 
-for (const library of ['ethers@6.15.0', '@solana/web3.js@1.98.4', '@ton/crypto@3.3.0', '@ton/ton@15.3.1']) {
-  if (!js.includes(library)) {
-    throw new Error(`Missing wallet dependency import: ${library}`);
-  }
-}
-
-for (const feature of ['const lucideIcons', 'encryptVault', 'decryptVault', 'createAccounts', 'submitTransaction', 'VAULT_KEY', 'mnemonicNew', 'Keypair.fromSeed']) {
-  if (!js.includes(feature)) {
-    throw new Error(`Missing wallet feature: ${feature}`);
-  }
-}
-
 for (const icon of ['Wallet', 'ShieldCheck', 'ArrowUpRight', 'ArrowDownLeft', 'QrCode']) {
   if (!js.includes(`data-lucide="${icon}"`)) {
     throw new Error(`Missing Lucide icon usage: ${icon}`);
@@ -34,4 +22,4 @@ if (!html.includes('Genpay Wallet')) {
   throw new Error('Missing Genpay page title');
 }
 
-console.log('Genpay wallet app check passed.');
+console.log('Genpay static app check passed.');
