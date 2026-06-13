@@ -1,9 +1,6 @@
-import { HDNodeWallet } from 'https://esm.sh/ethers@6.15.0';
+import { Wallet as EthWallet } from 'https://esm.sh/ethers@6.15.0';
 import { Keypair } from 'https://esm.sh/@solana/web3.js@1.98.4';
-import { generateMnemonic, mnemonicToSeedSync } from 'https://esm.sh/@scure/bip39@1.5.4';
-import { wordlist } from 'https://esm.sh/@scure/bip39@1.5.4/wordlists/english';
-import { derivePath } from 'https://esm.sh/ed25519-hd-key@1.3.0';
-import { mnemonicToWalletKey } from 'https://esm.sh/@ton/crypto@3.3.0';
+import { mnemonicNew, mnemonicToWalletKey } from 'https://esm.sh/@ton/crypto@3.3.0';
 import { WalletContractV4 } from 'https://esm.sh/@ton/ton@15.3.1';
 
 const VAULT_KEY = 'genpay.encryptedVault.v1';
@@ -12,6 +9,37 @@ const BALANCES_KEY = 'genpay.demoBalances.v1';
 
 const lucideIcons = {
   AlertTriangle: '<svg data-lucide="AlertTriangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+const chains = [
+  {
+    name: 'Solana',
+    ticker: 'SOL',
+    balance: '18.42',
+    fiatValue: '$2,731.10',
+    address: '8vQk...T4mP',
+    accent: '#8b5cf6',
+    description: 'Fast settlement for everyday Genpay transfers.',
+  },
+  {
+    name: 'Ethereum',
+    ticker: 'ETH',
+    balance: '3.08',
+    fiatValue: '$10,223.44',
+    address: '0x7A...91cF',
+    accent: '#3b82f6',
+    description: 'Self-custody access to DeFi and token payments.',
+  },
+  {
+    name: 'Ton',
+    ticker: 'TON',
+    balance: '642.90',
+    fiatValue: '$4,007.68',
+    address: 'UQDa...7nQp',
+    accent: '#06b6d4',
+    description: 'Messaging-native payments for global transfers.',
+  },
+];
+
+const lucideIcons = {
   ArrowDownLeft: '<svg data-lucide="ArrowDownLeft" viewBox="0 0 24 24"><path d="M17 7 7 17"/><path d="M17 17H7V7"/></svg>',
   ArrowUpRight: '<svg data-lucide="ArrowUpRight" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg>',
   BadgeCheck: '<svg data-lucide="BadgeCheck" viewBox="0 0 24 24"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.78 4.78 4 4 0 0 1-6.74 0 4 4 0 0 1-4.78-4.78 4 4 0 0 1 0-6.75Z"/><path d="m9 12 2 2 4-4"/></svg>',
@@ -30,23 +58,7 @@ const lucideIcons = {
   Zap: '<svg data-lucide="Zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>',
 };
 
-const chainMeta = {
-  Solana: { ticker: 'SOL', accent: '#8b5cf6', unit: 'lamports', network: 'devnet' },
-  Ethereum: { ticker: 'ETH', accent: '#3b82f6', unit: 'wei', network: 'sepolia' },
-  Ton: { ticker: 'TON', accent: '#06b6d4', unit: 'nanoTON', network: 'testnet' },
-};
-
-let decryptedSeedPhrase = null;
-
-const state = {
-  wallet: readJson(SESSION_KEY),
-  balances: readJson(BALANCES_KEY) ?? { Solana: 0.25, Ethereum: 0.05, Ton: 4.2 },
-  activeChain: 'Solana',
-  showBalances: true,
-  notice: '',
-  backupPhrase: '',
-  needsBackup: false,
-};
+let showBalances = true;
 
 function icon(name) {
   return lucideIcons[name];
@@ -72,8 +84,12 @@ function base64ToBytes(value) {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
 
-function randomMnemonic() {
-  return generateMnemonic(wordlist, 256);
+async function randomMnemonic() {
+  return (await mnemonicNew(24)).join(' ');
+}
+
+async function digestBytes(value) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
 }
 
 function bytesToHex(bytes) {
@@ -112,15 +128,16 @@ async function decryptVault(password) {
 }
 
 async function createAccounts(seedPhrase) {
-  const seedHex = bytesToHex(mnemonicToSeedSync(seedPhrase));
-  const eth = HDNodeWallet.fromPhrase(seedPhrase, undefined, "m/44'/60'/0'/0/0");
-  const solanaSeed = derivePath("m/44'/501'/0'/0'", seedHex).key;
+  const ethSeed = await digestBytes(`${seedPhrase}:ethereum`);
+  const solanaSeed = await digestBytes(`${seedPhrase}:solana`);
+  const eth = new EthWallet(`0x${bytesToHex(ethSeed)}`);
   const solana = Keypair.fromSeed(solanaSeed);
   const tonKey = await mnemonicToWalletKey(seedPhrase.split(' '));
   const tonWallet = WalletContractV4.create({ workchain: 0, publicKey: tonKey.publicKey });
 
   return {
     createdAt: new Date().toISOString(),
+    seedPhrase,
     chains: {
       Solana: { address: solana.publicKey.toBase58(), publicKey: solana.publicKey.toBase58() },
       Ethereum: { address: eth.address, publicKey: eth.signingKey.publicKey },
@@ -131,11 +148,8 @@ async function createAccounts(seedPhrase) {
 }
 
 function publicSession(wallet) {
-  return {
-    createdAt: wallet.createdAt,
-    chains: wallet.chains,
-    pendingTransactions: wallet.pendingTransactions ?? [],
-  };
+  const { seedPhrase, ...publicWallet } = wallet;
+  return publicWallet;
 }
 
 async function createWallet(event) {
@@ -145,13 +159,11 @@ async function createWallet(event) {
     setNotice('Use at least 8 characters for the local vault password.');
     return;
   }
-  const seedPhrase = randomMnemonic();
-  decryptedSeedPhrase = seedPhrase;
-  state.wallet = publicSession(await createAccounts(seedPhrase));
-  state.backupPhrase = seedPhrase;
-  state.needsBackup = true;
+  const seedPhrase = await randomMnemonic();
+  state.wallet = await createAccounts(seedPhrase);
   saveJson(VAULT_KEY, await encryptVault(seedPhrase, password));
-  setNotice('Wallet created. Confirm your recovery phrase backup before using the wallet.');
+  saveJson(SESSION_KEY, publicSession(state.wallet));
+  setNotice('Wallet created. Save your recovery phrase before sending funds.');
   render();
 }
 
@@ -160,9 +172,8 @@ async function unlockWallet(event) {
   const password = new FormData(event.currentTarget).get('password').toString();
   try {
     const seedPhrase = await decryptVault(password);
-    decryptedSeedPhrase = seedPhrase;
-    state.wallet = publicSession(await createAccounts(seedPhrase));
-    saveJson(SESSION_KEY, state.wallet);
+    state.wallet = await createAccounts(seedPhrase);
+    saveJson(SESSION_KEY, publicSession(state.wallet));
     setNotice('Vault unlocked locally. Private material stayed in this browser.');
     render();
   } catch {
@@ -175,11 +186,9 @@ function setNotice(message) {
 }
 
 function lockWallet() {
-  decryptedSeedPhrase = null;
+  sessionStorage.clear();
   localStorage.removeItem(SESSION_KEY);
   state.wallet = null;
-  state.backupPhrase = '';
-  state.needsBackup = false;
   setNotice('Wallet locked. Encrypted vault remains on this device.');
   render();
 }
@@ -196,11 +205,6 @@ function activeAccount() {
 
 function submitTransaction(event) {
   event.preventDefault();
-  if (!decryptedSeedPhrase) {
-    setNotice('Unlock the vault before preparing transactions.');
-    render();
-    return;
-  }
   const data = new FormData(event.currentTarget);
   const amount = Number(data.get('amount'));
   const to = data.get('recipient').toString().trim();
@@ -226,54 +230,9 @@ function submitTransaction(event) {
   };
   state.wallet.pendingTransactions.unshift(transaction);
   saveJson(BALANCES_KEY, state.balances);
-  saveJson(SESSION_KEY, state.wallet);
+  saveJson(SESSION_KEY, publicSession(state.wallet));
   setNotice('Transaction prepared locally. Broadcast integration is the next backend step.');
   render();
-}
-
-
-function confirmBackup() {
-  const checkbox = document.querySelector('#backup-confirmed');
-  if (!checkbox?.checked) {
-    setNotice('Confirm that you saved the recovery phrase before continuing.');
-    render();
-    return;
-  }
-  state.needsBackup = false;
-  state.backupPhrase = '';
-  saveJson(SESSION_KEY, state.wallet);
-  setNotice('Recovery phrase confirmed. Genpay is ready.');
-  render();
-}
-
-function copyRecoveryPhrase() {
-  navigator.clipboard.writeText(state.backupPhrase);
-  setNotice('Recovery phrase copied. Store it somewhere offline and private.');
-  render();
-}
-
-function backupScreen() {
-  const words = state.backupPhrase.split(' ');
-  return `
-    <section class="hero-grid compact">
-      <div class="hero-copy">
-        <p class="eyebrow">${icon('ShieldCheck')}Recovery required</p>
-        <h1>Back up your Genpay recovery phrase.</h1>
-        <p class="hero-text">This phrase is the only way to recover Solana, Ethereum, and Ton accounts generated by this vault. Genpay does not custody it and cannot restore it for you.</p>
-        <div class="warning-card">${icon('AlertTriangle')}Never share this phrase. Anyone with it can control the wallet.</div>
-      </div>
-      <aside class="wallet-card backup-card" aria-label="Recovery phrase backup">
-        <div class="seed-grid">
-          ${words.map((word, index) => `<span><small>${index + 1}</small>${word}</span>`).join('')}
-        </div>
-        <label class="checkbox-row"><input id="backup-confirmed" type="checkbox" /> I saved this phrase offline.</label>
-        <div class="hero-actions">
-          <button class="ghost-button large" id="copy-recovery" type="button">${icon('Copy')}Copy phrase</button>
-          <button class="primary-button large" id="confirm-backup" type="button">Continue</button>
-        </div>
-      </aside>
-    </section>
-  `;
 }
 
 function walletScreen() {
@@ -380,14 +339,12 @@ function render() {
         <div class="nav-actions"><span>${icon('Network')}Solana · Ethereum · Ton</span></div>
       </nav>
       ${state.notice ? `<div class="notice">${state.notice}</div>` : ''}
-      ${state.needsBackup ? backupScreen() : state.wallet ? walletScreen() : onboardingScreen()}
+      ${state.wallet ? walletScreen() : onboardingScreen()}
     </main>
   `;
 
   document.querySelector('#create-form')?.addEventListener('submit', createWallet);
   document.querySelector('#unlock-form')?.addEventListener('submit', unlockWallet);
-  document.querySelector('#confirm-backup')?.addEventListener('click', confirmBackup);
-  document.querySelector('#copy-recovery')?.addEventListener('click', copyRecoveryPhrase);
   document.querySelector('#lock-wallet')?.addEventListener('click', lockWallet);
   document.querySelector('#copy-address')?.addEventListener('click', copyAddress);
   document.querySelector('#send-form')?.addEventListener('submit', submitTransaction);
@@ -400,6 +357,80 @@ function render() {
       state.activeChain = button.dataset.chain;
       render();
     });
+  });
+function render() {
+  const total = showBalances ? '$16,962.22' : '••••••';
+  document.querySelector('#app').innerHTML = `
+    <main class="app-shell">
+      <nav class="topbar" aria-label="Primary navigation">
+        <div class="brand-mark">${icon('Wallet')}<span>Genpay</span></div>
+        <div class="nav-actions">
+          <button class="ghost-button" type="button">${icon('Network')}Mainnet</button>
+          <button class="primary-button" type="button">${icon('KeyRound')}Create wallet</button>
+        </div>
+      </nav>
+
+      <section class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">${icon('ShieldCheck')}Non-custodial crypto wallet</p>
+          <h1>Your keys. Your chains. Your Genpay.</h1>
+          <p class="hero-text">
+            A simple starting point for a secure wallet experience across Solana, Ethereum, and Ton.
+            Genpay keeps private keys under user control while making send, receive, and network
+            switching feel effortless.
+          </p>
+          <div class="hero-actions">
+            <button class="primary-button large" type="button">${icon('Fingerprint')}Start securely</button>
+            <button class="ghost-button large" type="button">${icon('QrCode')}Receive funds</button>
+          </div>
+        </div>
+
+        <aside class="wallet-card" aria-label="Genpay wallet overview">
+          <div class="wallet-card-header">
+            <div><p>Total balance</p><h2>${total}</h2></div>
+            <button class="icon-button" id="toggle-balances" type="button" aria-label="${showBalances ? 'Hide balances' : 'Show balances'}">
+              ${icon(showBalances ? 'EyeOff' : 'Eye')}
+            </button>
+          </div>
+          <div class="quick-actions" aria-label="Wallet actions">
+            <button type="button">${icon('ArrowUpRight')}Send</button>
+            <button type="button">${icon('ArrowDownLeft')}Receive</button>
+            <button type="button">${icon('Copy')}Copy</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="chain-section" aria-labelledby="chain-title">
+        <div class="section-heading">
+          <p class="eyebrow">${icon('Coins')}Launch chains</p>
+          <h2 id="chain-title">Built first for Solana, Ethereum, and Ton</h2>
+        </div>
+        <div class="chain-grid">
+          ${chains.map((chain) => `
+            <article class="chain-card" style="--accent: ${chain.accent}">
+              <div class="chain-icon" aria-hidden="true">${icon('Sparkles')}</div>
+              <div><h3>${chain.name}</h3><p>${chain.description}</p></div>
+              <dl>
+                <div><dt>Balance</dt><dd>${showBalances ? `${chain.balance} ${chain.ticker}` : '••••••'}</dd></div>
+                <div><dt>Value</dt><dd>${showBalances ? chain.fiatValue : '••••••'}</dd></div>
+                <div><dt>Address</dt><dd>${chain.address}</dd></div>
+              </dl>
+            </article>
+          `).join('')}
+        </div>
+      </section>
+
+      <section class="security-strip" aria-label="Security principles">
+        <div>${icon('LockKeyhole')}<span>Seed phrase encrypted locally</span></div>
+        <div>${icon('BadgeCheck')}<span>User signs every transaction</span></div>
+        <div>${icon('Zap')}<span>Chain-ready payment shortcuts</span></div>
+      </section>
+    </main>
+  `;
+
+  document.querySelector('#toggle-balances').addEventListener('click', () => {
+    showBalances = !showBalances;
+    render();
   });
 }
 

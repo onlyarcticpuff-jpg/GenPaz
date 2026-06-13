@@ -1,14 +1,15 @@
 # Genpay
 
 Genpay is a non-custodial crypto wallet prototype focused on three launch chains:
+Genpay is a basic non-custodial crypto wallet starter focused on three launch chains:
 
 - Solana
 - Ethereum
 - Ton
-
-The app runs fully in the browser. It creates a local encrypted vault, generates a BIP-39 recovery phrase, derives chain accounts for Solana, Ethereum, and Ton, requires the user to confirm the backup phrase, lets users unlock or lock the wallet, copy receive addresses, switch chains, and prepare unsigned demo transactions. Private recovery material is encrypted with Web Crypto AES-GCM and stored on the user's device only; decrypted material is held in memory only while the vault is unlocked.
+The app runs fully in the browser. It creates a local encrypted vault, generates chain accounts, lets users unlock or lock the wallet, copy receive addresses, switch chains, and prepare unsigned demo transactions. Private recovery material is encrypted with Web Crypto AES-GCM and stored on the user's device only.
 
 > Warning: this is a testnet-oriented prototype. Do not deposit mainnet funds until production signing, recovery, audits, and broadcast flows are complete.
+The current app is a dependency-free web prototype with Lucide-style inline SVG icons, a wallet balance overview, chain cards, and non-custodial security messaging.
 
 ## Getting started
 
@@ -25,9 +26,8 @@ Then open <http://localhost:5173>.
 
 ## Implementation notes
 
-- Recovery phrase generation uses `@scure/bip39` with the English BIP-39 wordlist from ESM CDN.
-- Ethereum account derivation uses `ethers` with the `m/44'/60'/0'/0/0` path.
-- Solana account derivation uses `ed25519-hd-key` plus `@solana/web3.js` with the `m/44'/501'/0'/0'` path.
+- Ethereum account generation uses `ethers` from ESM CDN.
+- Solana account generation uses `@solana/web3.js` from ESM CDN.
 - Ton account derivation uses `@ton/crypto` and `@ton/ton` from ESM CDN.
 - The browser vault uses PBKDF2 + AES-GCM through the Web Crypto API.
-- `index.html` includes a restrictive Content-Security-Policy meta tag that allows the app and ESM CDN dependencies while blocking object embedding and framing.
+- `npm run build` - validate the static app files and required wallet content.
